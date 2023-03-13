@@ -1,31 +1,34 @@
 PREFIX ?= /usr/local
-BINDIR ?= /bin
 LIBDIR ?= /lib
+INCLDIR ?= /include
 
-all: libbootstr.so puny
+all: build/libbootstr.so build/puny
 
 clean:
-	rm -f puny
+	rm -rf build
 
-puny: puny.c libbootstr.so
-	$(CC) -o $@ $(filter %.c,$^) -g -lunistring -L . -lbootstr
+build:
+	mkdir build
+
+build/puny: src/puny.c build/libbootstr.so | build
+	$(CC) -o $@ $< -g -I include -L build -lunistring -lbootstr
+
+build/libbootstr.so: src/bootstr.c include/bootstr.h | build
+	$(CC) -o $@ $< -I include -fPIC -shared -lunistring
 
 test/%.phony: test/%.in test/%.out
-	@echo "test $*"
-	test "$(shell cat test/$*.in | ./puny -e)" = "$(shell cat test/$*.out)"
-	test "$(shell cat test/$*.out | ./puny -d)" = "$(shell cat test/$*.in)"
+	@echo "> test $*"
+	test "$(shell cat test/$*.in | ./build/puny -e)" = "$(shell cat test/$*.out)"
+	test "$(shell cat test/$*.out | ./build/puny -d)" = "$(shell cat test/$*.in)"
 
-test: puny test/basic.phony
-
-libbootstr.so: bootstr.o
-	$(CC) -o $@ $^ -fPIC -shared -lunistring
+test: build/puny test/puny-basic.phony
 
 install:
-	install -m755 libbootstr.so -t "$(DESTDIR)$(PREFIX)$(LIBDIR)"
-	install -m755 puny -t "$(DESTDIR)$(PREFIX)$(BINDIR)"
+	install -m644 include/bootstr.h -t "$(DESTDIR)$(PREFIX)$(INCLDIR)"
+	install -m755 build/libbootstr.so -t "$(DESTDIR)$(PREFIX)$(LIBDIR)"
 
 uninstall:
+	rm -f "$(DESTDIR)$(PREFIX)$(INCLDIR)/bootstr.h"
 	rm -f "$(DESTDIR)$(PREFIX)$(LIBDIR)/libbootstr.so"
-	rm -f "$(DESTDIR)$(PREFIX)$(BINDIR)/puny"
 
 .PHONY: all clean test install uninstall
