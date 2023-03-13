@@ -11,7 +11,7 @@
 #define MIN(a, b) ((a) > (b) ? (b) : (a))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-static int check_realloc(uint32_t **alloc, size_t reserve, size_t *cap);
+static int bootstr_realloc(uint32_t **alloc, size_t reserve, size_t *cap);
 static int append_codes(uint32_t **alloc, size_t *len, size_t *cap,
 	const uint32_t *src, size_t srclen);
 static int check_config(const struct bootstr_cfg *cfg);
@@ -36,7 +36,7 @@ bootstr_adapt(const struct bootstr_cfg *cfg, ssize_t delta,
 }
 
 int
-check_realloc(uint32_t **alloc, size_t reserve, size_t *cap)
+bootstr_realloc(uint32_t **alloc, size_t reserve, size_t *cap)
 {
 	if (reserve >= *cap) {
 		if (!*cap) {
@@ -45,7 +45,7 @@ check_realloc(uint32_t **alloc, size_t reserve, size_t *cap)
 			*cap = MAX(*cap * 2, reserve);
 		}
 		*alloc = realloc(*alloc, *cap * sizeof(uint32_t));
-		if (!*alloc) return errno;
+		if (!*alloc) return -errno;
 	}
 
 	return 0;
@@ -57,7 +57,7 @@ append_codes(uint32_t **alloc, size_t *len, size_t *cap,
 {
 	int ret;
 
-	ret = check_realloc(alloc, *len + srclen, cap);
+	ret = bootstr_realloc(alloc, *len + srclen, cap);
 	if (ret) return ret;
 
 	memcpy(*alloc + *len, src, srclen * sizeof(uint32_t));
@@ -70,19 +70,19 @@ int
 check_config(const struct bootstr_cfg *cfg)
 {
 	if (cfg->tmin >= cfg->baselen || cfg->tmin <= 0)
-		return EINVAL;
+		return -EINVAL;
 
 	if (cfg->tmax < cfg->tmin)
-		return EINVAL;
+		return -EINVAL;
 
 	if (!cfg->delim)
-		return EINVAL;
+		return -EINVAL;
 
 	if (!cfg->base || cfg->baselen <= 0)
-		return EINVAL;
+		return -EINVAL;
 
 	if (!cfg->damp)
-		return EINVAL;
+		return -EINVAL;
 
 	return 0;
 }
@@ -107,13 +107,13 @@ bootstr_encode_delta(const struct bootstr_cfg *cfg, uint32_t *in, uint32_t **out
 
 		/* no room for encoding, invalid params */
 		if (thresh >= cfg->baselen)
-			return EINVAL;
+			return -EINVAL;
 
 		/* encode char according to current base */
 		ci = thresh + (val - thresh) % (cfg->baselen - thresh);
 		val = (val - thresh) / (cfg->baselen - thresh);
 		if (ci >= cfg->baselen)
-			return EINVAL;
+			return -EINVAL;
 
 		ret = append_codes(out, outlen, outcap, &cfg->base[ci], 1);
 		if (ret) return ret;
@@ -176,7 +176,7 @@ bootstr_encode(const struct bootstr_cfg *cfg, uint32_t *in, uint32_t **out)
 		 * (processed + 1) insertions possible per round
 		 * (next_code - n) rounds todo */
 		if ((next_code - n) > (SSIZE_MAX - delta) / (processed + 1))
-			return EOVERFLOW;
+			return -EOVERFLOW;
 		delta += (next_code - n) * (processed + 1);
 
 		/* calculate number of skip to reach code in output at n */
@@ -186,7 +186,7 @@ bootstr_encode(const struct bootstr_cfg *cfg, uint32_t *in, uint32_t **out)
 			if (in[i] < n || cfg->is_basic(in[i])) {
 				delta += 1;
 				if (delta <= 0)
-					return EOVERFLOW;
+					return -EOVERFLOW;
 			}
 
 			/* reached the position of ONE of next_code */
@@ -227,22 +227,22 @@ bootstr_decode_delta(const struct bootstr_cfg *cfg, uint32_t *in,
 	mul = 1;
 	off = cfg->baselen;
 	while (1) {
-		if (!in[*processed]) return EINVAL;
+		if (!in[*processed]) return -EINVAL;
 
 		tok = u32_strchr(cfg->base, in[*processed]);
-		if (!tok) return EINVAL;
+		if (!tok) return -EINVAL;
 		*processed += 1;
 
 		digit = tok - cfg->base;
 		if (digit > (SSIZE_MAX - state) / mul)
-			return EOVERFLOW;
+			return -EOVERFLOW;
 		state += digit * mul;
 
 		thresh = MIN(cfg->tmax, MAX(cfg->tmin, off - bias));
 		if (digit < thresh) break;
 
 		if (mul > SSIZE_MAX / (cfg->baselen - thresh))
-			return EOVERFLOW;
+			return -EOVERFLOW;
 		mul *= cfg->baselen - thresh;
 
 		off += cfg->baselen;
@@ -261,10 +261,10 @@ bootstr_decode(const struct bootstr_cfg *cfg, uint32_t *in, uint32_t **out)
 	ssize_t processed, n;
 	ssize_t state, state_new, bias;
 	ssize_t i, len;
-	int ret;
+	int rc;
 
-	ret = check_config(cfg);
-	if (ret) return ret;
+	rc = check_config(cfg);
+	if (rc) return rc;
 
 	outlen = 0;
 	outcap = 0;
@@ -279,7 +279,7 @@ bootstr_decode(const struct bootstr_cfg *cfg, uint32_t *in, uint32_t **out)
 			break;
 		}
 		if (!cfg->is_basic(in[i]))
-			return EINVAL;
+			return -EINVAL;
 	}
 
 	/* copy basic prefix to output */
@@ -293,9 +293,9 @@ bootstr_decode(const struct bootstr_cfg *cfg, uint32_t *in, uint32_t **out)
 	/* decode rest of non-basic chars */
 	for (processed = basiclen; processed < inlen; ) {
 		/* decode delta and add to state */
-		ret = bootstr_decode_delta(cfg, in, &processed,
+		rc = bootstr_decode_delta(cfg, in, &processed,
 			bias, state, &state_new);
-		if (ret) return ret;
+		if (rc) return rc;
 
 		/* use delta to calculate new bias */
 		bias = bootstr_adapt(cfg, state_new - state,
@@ -304,13 +304,13 @@ bootstr_decode(const struct bootstr_cfg *cfg, uint32_t *in, uint32_t **out)
 
 		/* split up state into rounds and index */
 		if (state / (outlen + 1) > (SSIZE_MAX - n))
-			return EOVERFLOW;
+			return -EOVERFLOW;
 		n += state / (outlen + 1);
 		state %= outlen + 1;
 
 		/* insert current code */
-		ret = check_realloc(out, outlen + 1, &outcap);
-		if (ret) return ret;
+		rc = bootstr_realloc(out, outlen + 1, &outcap);
+		if (rc) return rc;
 		memmove(*out + state + 1, *out + state,
 			(outlen - state) * sizeof(uint32_t));
 		(*out)[state] = n;
@@ -318,8 +318,8 @@ bootstr_decode(const struct bootstr_cfg *cfg, uint32_t *in, uint32_t **out)
 		outlen += 1;
 	}
 
-	ret = append_codes(out, &outlen, &outcap, U"\x00", 1);
-	if (ret) return ret;
+	rc = append_codes(out, &outlen, &outcap, U"\x00", 1);
+	if (rc) return rc;
 
 	return 0;
 }
